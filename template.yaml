@@ -1,0 +1,714 @@
+AWSTemplateFormatVersion : '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  ProjectName:
+    Type: String
+    Description: This is the name of the project. This will be used to prefix resource names where unique names are required
+
+  EmailForNotifications:
+    Type: String
+    Description: The email address to which all notifications regarding then Golden AMI builds will be sent to.
+  
+  VPCId:
+    Type: String
+    Description: The id for the VPC where the packer temporary EC2 instance will be created.
+
+  CodePipelinePipelineName:
+    Type: String
+    Description: Name to be used for the AWS CodePipeline pipeline
+
+  CodePipelineArtifactStoreS3Bucket:
+    Type: String
+    Description: Amazon S3 bucket used by AWS CodePipeline for storing artifacts
+
+  CodeCommitRepoName:
+    Type: String
+    Description: Name to be used for the AWS CodeCommit repository that will be created for this project
+
+  CodeCommitBranchName:
+    Type: String
+    Description: Name of the AWS CodeCommit repository branch that will be used to trigger the CodePipeline pipeline
+
+  CodeBuildProjectName:
+    Type: String
+    Description: Name to be used for the AWS CodeBuild project.
+  
+  CodeBuildCWLogGroupName:
+    Type: String
+    Description: CloudWatch Logs log group name that will be used by AWS CodeBuild for logging purposes
+
+  CodeBuildCWLogStreamName:
+    Type: String
+    Description: CloudWatch Logs log group stream name that will be used by AWS CodeBuild for logging purposes
+
+  AmiNamePrefix:
+    Type: String
+    Description: The prefix to use for the AMI name for the AMI that Packer will create.
+
+  PackerTemplateFilename:
+    Type: String
+    Description: Name of the Packer template file to use when creating an AMI using packer. This file must exist in packer_files/template folder
+
+  BaseAmiSSMParameterName:
+    Type: String
+    Description: AWS SSM Parameter Store Parameter Name for where the latest base ami's ami id will be stored
+  
+  BaseAmiSSMParameterDesc:
+    Type: String
+    Description: The description for the AWS SSM Parameter Store Parameter Name that has the latest base ami's ami id.
+  
+  GoldenAmiSSMParameterName:
+    Type: String
+    Description: AWS SSM Parameter Store Parameter Name for where the latest golden ami's ami id will be stored
+  
+  GoldenAmiSSMParameterDesc:
+    Type: String
+    Description: The description for the AWS SSM Parameter Store Parameter Name that has the latest golden ami's ami id.
+  
+Resources:
+  # IAM role that will be used for AWS CodePipeline pipeline
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Policy used in trust relationship with CodePipeline
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'codepipeline.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Join [ '-', [ !Ref 'AWS::StackName', !Ref ProjectName, 'CodePipeline-Policy' ] ]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codecommit:CancelUploadArchive
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetRepository
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:UploadArchive
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - elasticbeanstalk:*
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - cloudwatch:*
+                  - s3:*
+                  - sns:*
+                  - cloudformation:*
+                  - rds:*
+                  - sqs:*
+                  - ecs:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:ListFunctions
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - opsworks:CreateDeployment
+                  - opsworks:DescribeApps
+                  - opsworks:DescribeCommands
+                  - opsworks:DescribeDeployments
+                  - opsworks:DescribeInstances
+                  - opsworks:DescribeStacks
+                  - opsworks:UpdateApp
+                  - opsworks:UpdateStack
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuildBatches
+                  - codebuild:StartBuildBatch
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - devicefarm:ListProjects
+                  - devicefarm:ListDevicePools
+                  - devicefarm:GetRun
+                  - devicefarm:GetUpload
+                  - devicefarm:CreateUpload
+                  - devicefarm:ScheduleRun
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - servicecatalog:ListProvisioningArtifacts
+                  - servicecatalog:CreateProvisioningArtifact
+                  - servicecatalog:DescribeProvisioningArtifact
+                  - servicecatalog:DeleteProvisioningArtifact
+                  - servicecatalog:UpdateProduct
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                  - states:DescribeStateMachine
+                  - states:StartExecution
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - appconfig:StartDeployment
+                  - appconfig:StopDeployment
+                  - appconfig:GetDeployment
+                Resource: '*'
+
+  # IAM role that will be used by the AWS EventBridge rule to start the AWS CodePipeline pipeline
+  AmazonEventBridgeEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+            PolicyName: !Join [ '-', [ !Ref ProjectName, 'Pipeline-Execution-Policy' ] ]
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                -
+                  Effect: Allow
+                  Action: codepipeline:StartPipelineExecution
+                  Resource: !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref EvergreenAMIPipeline ] ]
+  
+  # IAM role that will be used by the AWS CodeBuild project
+  AWSCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Join [ '-', [ !Ref 'AWS::StackName', !Ref ProjectName, 'CodeBuild-Policy' ] ]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Join [ '', [ 'arn:aws:logs:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':log-group:/aws/codebuild/', !Ref CodeBuildProjectName ] ]
+                  - !Join [ '', [ 'arn:aws:logs:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':log-group:/aws/codebuild/', !Ref CodeBuildProjectName, ':*' ] ]
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                Resource: 
+                  - !Join [ '', [ 'arn:aws:s3:::', !Ref CodePipelineArtifactStoreS3Bucket ] ]
+                  - !Join [ '', [ 'arn:aws:s3:::', !Ref CodePipelineArtifactStoreS3Bucket, '/*' ] ]
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                Resource: !GetAtt EvergreenAMICodeCommitRepo.Arn
+              - Effect: Allow
+                Action:
+                  - ssm:DescribeParameters
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:GetParameterHistory
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - ssm:DeleteParameters
+                Resource: !Join [ '', [ 'arn:aws:ssm:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':parameter/', !Ref ProjectName, '/*' ] ]
+              - Effect: Allow
+                Action:
+                  - codebuild:CreateReportGroup
+                  - codebuild:CreateReport
+                  - codebuild:UpdateReport
+                  - codebuild:BatchPutTestCases
+                  - codebuild:BatchPutCodeCoverages
+                Resource: !Join [ '', [ 'arn:aws:codebuild:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':report-group/', !Ref CodeBuildProjectName, '-*' ] ]
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Join [ '', [ 'arn:aws:logs:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':log-group:', !Ref CodeBuildCWLogGroupName ] ]
+                  - !Join [ '', [ 'arn:aws:logs:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':log-group:', !Ref CodeBuildCWLogGroupName, ':*' ] ]
+        - PolicyName: !Join [ '-', [ !Ref 'AWS::StackName', !Ref ProjectName, 'CodeBuild-Packer-Policy' ] ]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:AttachVolume
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:CopyImage
+                  - ec2:CreateImage
+                  - ec2:CreateKeypair
+                  - ec2:CreateSecurityGroup
+                  - ec2:CreateSnapshot
+                  - ec2:CreateTags
+                  - ec2:CreateVolume
+                  - ec2:DeleteKeyPair
+                  - ec2:DeleteSecurityGroup
+                  - ec2:DeleteSnapshot
+                  - ec2:DeleteVolume
+                  - ec2:DeregisterImage
+                  - ec2:DescribeImageAttribute
+                  - ec2:DescribeImages
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeRegions
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeTags
+                  - ec2:DescribeVolumes
+                  - ec2:DetachVolume
+                  - ec2:GetPasswordData
+                  - ec2:ModifyImageAttribute
+                  - ec2:ModifyInstanceAttribute
+                  - ec2:ModifySnapshotAttribute
+                  - ec2:RegisterImage
+                  - ec2:RunInstances
+                  - ec2:StopInstances
+                  - ec2:TerminateInstances
+                Resource: '*'
+            
+  # IAM role that will be attached to the AWS SNS Topic. This will allow AWS EventBridge events to publish messages to it
+  EvergreenAMISNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties: 
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: __default_statement_ID
+            Effect: Allow
+            Principal:
+              "AWS": "*"
+            Action:
+            - sns:GetTopicAttributes
+            - sns:SetTopicAttributes
+            - sns:AddPermission
+            - sns:RemovePermission
+            - sns:DeleteTopic
+            - sns:Subscribe
+            - sns:ListSubscriptionsByTopic
+            - sns:Publish
+            Resource: !Ref EvergreenAMISNSTopic
+            Condition:
+              StringEquals:
+                "AWS:SourceOwner": !Ref 'AWS::AccountId'
+          - Sid: Allow_CloudWatchEvents_To_Publish
+            Effect: Allow
+            Action:
+            - sns:Publish
+            Principal:
+              "Service": "events.amazonaws.com"
+            Resource: !Ref EvergreenAMISNSTopic
+      Topics: 
+        - !Ref EvergreenAMISNSTopic
+  
+  # This is the security group that Packer will attach to the temporary Amazon EC2 instance that it will create.
+  # The default security group that Packer attaches is too permissive, it allows ssh from anywhere, which is a security concern.
+  # The following security group only allows ssh from the ap-southeast-2 AWS CodeBuild servers. If you are using
+  # AWS CodeBuild servers from another AWS Region, replace the CidrIp values from the respective region. The ip addresses are
+  # available from https://docs.aws.amazon.com/general/latest/gr/aws-ip-ranges.html
+  EvergreenAMIPackerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Security Group used by Packer to connect to the temporary Amazon EC2 instance
+      GroupName: !Join [ '-', [ !Ref ProjectName, 'packer-sg' ] ]
+      SecurityGroupEgress: 
+        -   CidrIp: 0.0.0.0/0
+            Description: Allow all outbound traffic
+            FromPort: -1
+            IpProtocol: -1
+            ToPort: -1
+      SecurityGroupIngress: 
+        -   CidrIp: 3.26.127.24/29
+            Description: Allow inbound from AWS CodeBuild Servers
+            FromPort: 22
+            IpProtocol: tcp
+            ToPort: 22
+        -   CidrIp: 13.55.255.216/29
+            Description: Allow inbound from AWS CodeBuild Servers
+            FromPort: 22
+            IpProtocol: tcp
+            ToPort: 22
+      VpcId: !Ref VPCId
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref ProjectName, 'packer-sg' ] ]
+
+  # this is the AWS SSM Paramter Store parameter where the base ami id will be stored
+  EvergreenAMIBaseAMIParameterStore:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: !Ref BaseAmiSSMParameterDesc
+      Name: !Ref BaseAmiSSMParameterName
+      Tier: Standard
+      Type: String
+      Value: ami-0c641f2290e9cd048
+
+  # this is the AWS CodeCommit repository that will be created
+  EvergreenAMICodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref CodeCommitRepoName
+      RepositoryDescription: This is a repository for the Evergreen AMI project.
+
+  # this is the AWS CodeBuild project
+  EvergreenAMICodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties: 
+      Artifacts: 
+        Type: NO_ARTIFACTS
+      BadgeEnabled: false
+      Description: AWS CodeBuild project to build artefacts for Evergreen AMI project.
+      Environment: 
+          ComputeType: BUILD_GENERAL1_SMALL
+          Image: aws/codebuild/amazonlinux2-x86_64-standard:4.0
+          PrivilegedMode: true
+          Type: LINUX_CONTAINER
+      LogsConfig: 
+          CloudWatchLogs: 
+              GroupName: !Ref CodeBuildCWLogGroupName
+              Status: ENABLED
+              StreamName: !Ref CodeBuildCWLogStreamName
+      Name: !Ref CodeBuildProjectName
+      ResourceAccessRole: !GetAtt AWSCodeBuildRole.Arn
+      ServiceRole: !GetAtt AWSCodeBuildRole.Arn
+      Source: 
+          GitCloneDepth: 1
+          Location: !Join [ '', [ 'https://git-codecommit.', !Ref 'AWS::Region', '.amazonaws.com/v1/repos/' , !Ref CodeCommitRepoName ] ]
+          Type: CODECOMMIT
+      TimeoutInMinutes: 60
+      Visibility: PRIVATE
+
+  # this is the AWS CodePipeline pipeline
+  EvergreenAMIPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Name: !Ref CodePipelinePipelineName
+      RestartExecutionOnUpdate: False
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactStoreS3Bucket
+      Stages:
+        - 
+          Name: Source
+          Actions:
+            - 
+              Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              InputArtifacts: []
+              OutputArtifacts:
+                - Name: !Join [ '-', [ !Ref 'AWS::StackName', 'SourceArtifact' ] ]
+              Namespace: SourceVariables
+              Configuration: 
+                RepositoryName: !GetAtt EvergreenAMICodeCommitRepo.Name
+                BranchName: !Ref CodeCommitBranchName
+                PollForSourceChanges: 'false'
+              RunOrder: 1
+        -
+          Name: Build
+          Actions:
+            - 
+              Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                BatchEnabled: False
+                CombineArtifacts: False
+                ProjectName: !Ref CodeBuildProjectName
+                EnvironmentVariables: 
+                  !Join
+                    - ''
+                    - - '[{"name": "AWS_AMI_NAME_PREFIX",'
+                      - ' "value": "'
+                      - !Ref AmiNamePrefix
+                      - '", "type": "PLAINTEXT" }, '
+                      - '{"name": "AWS_BASE_AMI_ID", '
+                      - '"value": "'
+                      - !Ref BaseAmiSSMParameterName
+                      - '", "type": "PARAMETER_STORE"}, '
+                      - '{"name": "AWS_BASE_AMI_SSM_PARAM_NAME", '
+                      - '"value": "'
+                      - !Ref BaseAmiSSMParameterName
+                      - '", "type": "PLAINTEXT"}, '
+                      - '{"name": "AWS_BASE_AMI_SSM_PARAM_DESC", '
+                      - '"value": "'
+                      - !Ref BaseAmiSSMParameterDesc
+                      - '", "type": "PLAINTEXT"}, '
+                      - '{"name": "AWS_GOLDEN_AMI_SSM_PARAM_NAME", '
+                      - '"value": "'
+                      - !Ref GoldenAmiSSMParameterName
+                      - '", "type": "PLAINTEXT"}, '
+                      - '{"name": "AWS_GOLDEN_AMI_SSM_PARAM_DESC", '
+                      - '"value": "'
+                      - !Ref GoldenAmiSSMParameterDesc
+                      - '", "type": "PLAINTEXT"}, '
+                      - '{"name": "PACKER_TEMPLATE_FILENAME", '
+                      - '"value": "'
+                      - !Ref PackerTemplateFilename
+                      - '", "type": "PLAINTEXT"}, '
+                      - '{"name": "PACKER_SECURITY_GROUP_ID", '
+                      - '"value": "'
+                      - !GetAtt EvergreenAMIPackerSecurityGroup.GroupId
+                      - '" , "type": "PLAINTEXT"}]'
+              InputArtifacts:
+                - Name: !Join [ '-', [ !Ref 'AWS::StackName', 'SourceArtifact' ] ]
+              OutputArtifacts:
+                - Name: !Join [ '-', [ !Ref 'AWS::StackName', 'BuildArtifact' ] ]
+              RunOrder: 2
+
+  # This is the AWS Lambda function that will detect if a new Amazon Linux 2 AMI has been releaed by AWS
+  # It runs every day at 1800 UTC (0400 UTC + 10)  
+  DetectNewBaseAMIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/check_if_new_base_ami_released.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      MemorySize: 128
+      Events:
+        CloudWatchEventsSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0 18 * * ? *)'
+            Name: !Join ['-', [ 'Check-if-new-base-ami-released-', !Ref 'AWS::StackName' ]]
+            Description: Check if a new base ami matching our filter pattern has been released by AWS
+            Enabled: True
+      Environment:
+        Variables:
+          REGION: !Ref 'AWS::Region'
+          SSM_PARAMETER_NAME_BASE_AMI_ID: !Ref BaseAmiSSMParameterName
+          CODEPIPELINE_PIPELINE_NAME: !Ref CodePipelinePipelineName
+      Policies:
+      - Statement:
+        - Sid: ReadUpdateSSMParameterStoreValues
+          Effect: Allow
+          Action:
+          - ssm:PutParameter
+          - ssm:DeleteParameter
+          - ssm:GetParameterHistory
+          - ssm:GetParametersByPath
+          - ssm:GetParameters
+          - ssm:GetParameter
+          - ssm:DeleteParameters
+          Resource: !Join [ '', [ 'arn:aws:ssm:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':parameter/', !Ref ProjectName, '/*' ] ]
+        - Sid: StartCodePipelinePipelineExecution
+          Effect: Allow
+          Action:
+          - codepipeline:StartPipelineExecution
+          Resource: !Join ['', ['arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref CodePipelinePipelineName ]]
+        - Sid: CheckLatestAWSAmis
+          Effect: Allow
+          Action:
+          - ec2:DescribeImages
+          Resource: '*'
+
+  # This is the Amazon SNS Topic that will be used to send notifications. An email subscription is created using the
+  # email address provided using EmailForNotifications parameter (this is configured in the Makefile)
+  EvergreenAMISNSTopic:
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: !Join [ '-', [ !Ref ProjectName, 'notifications' ] ]
+      Subscription: 
+        - Protocol: email
+          Endpoint: !Ref EmailForNotifications
+      Tags: 
+        - Key: Name
+          Value: !Join [ '-', [ !Ref ProjectName, 'notifications' ] ]
+      TopicName: !Join [ '-', [ !Ref ProjectName, 'notifications' ] ]
+
+  # This is the Amazon EventBridge rule that will trigger the AWS CodePipeline pipeline whenever code is commited to
+  # the AWS CodeCommit repository's CodeCommitBranchName branch.
+  EventBridgeRuleToTriggerCodePipeline:
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: This Amazon EventBridge rule will automatically trigger the Evergreen AMI Codepipeline pipline when changes are detected in the Evergreen CodeCommit repository in the monitored branch
+      EventBusName: default
+      EventPattern:
+        source: 
+          - aws.codecommit
+        detail-type: 
+          - CodeCommit Repository State Change
+        resources:
+          - !GetAtt EvergreenAMICodeCommitRepo.Arn
+        detail:
+          event: 
+            - referenceCreated
+            - referenceUpdated
+          referenceType: 
+            - branch
+          referenceName: 
+            - !Ref CodeCommitBranchName
+      Name: !Join [ '-', [ !Ref ProjectName, 'Pipeline-Trigger' ] ]
+      State: ENABLED
+      Targets: 
+        - 
+          Arn:
+            !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref EvergreenAMIPipeline ] ]
+          RoleArn: !GetAtt AmazonEventBridgeEventRole.Arn
+          Id: !Join [ '-', [ !Ref ProjectName, 'Pipeline-Trigger' ] ]
+            
+  # This is the Amazon EventBridge rule to send notifications via the Amazon SNS Topic when the AWS CodeBuild project is successful  
+  EventBridgeRuleForCodeBuildSuccess:
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: This Amazon EventBridge rule will monitor and send notifications for successful CodeBuild project runs
+      EventBusName: default
+      EventPattern:
+        source: 
+          - aws.codebuild
+        detail-type: 
+          - CodeBuild Build State Change
+        detail:
+          project-name:
+            - !Ref CodeBuildProjectName
+          build-status:
+            - SUCCEEDED
+      Name: !Join [ '-', [ !Ref ProjectName, 'CodeBuild-Project-Success-Notifications' ] ]
+      State: ENABLED
+      Targets: 
+        - 
+          Arn: !Ref EvergreenAMISNSTopic
+          InputTransformer:
+            InputPathsMap:
+              "build-id": "$.detail.build-id"
+              "project-name": "$.detail.project-name"
+              "build-status": "$.detail.build-status"
+            InputTemplate: |
+              "AWS CodeBuild Project '<project-name>' with Build Id '<build-id>' has completed successfully. Build Status: '<build-status>'."
+          Id: !Join [ '-', [ !Ref ProjectName, 'CodeBuild-Project-Success-Notifications' ] ]
+
+  # This is the Amazon EventBridge rule to send notifications via the Amazon SNS Topic when the AWS CodeBuild project is in 
+  # IN_PROGRESS, STOPPED or FAILED state
+  EventBridgeRuleForCodeBuildNonSuccess:
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: This Amazon EventBridge rule will monitor and send notifications for all Evergreen AMI CodeBuild project state changes except for SUCCEEDED.
+      EventBusName: default
+      EventPattern:
+        source: 
+          - aws.codebuild
+        detail-type: 
+          - CodeBuild Build State Change
+        detail:
+          project-name:
+            - !Ref CodeBuildProjectName
+          build-status:
+            - IN_PROGRESS
+            - STOPPED
+            - FAILED
+      Name: !Join [ '-', [ !Ref ProjectName, 'CodeBuild-Project-NonSuccess-Notifications' ] ]
+      State: ENABLED
+      Targets: 
+        - 
+          Arn: !Ref EvergreenAMISNSTopic
+          InputTransformer:
+            InputPathsMap:
+              "build-id": "$.detail.build-id"
+              "project-name": "$.detail.project-name"
+              "build-status": "$.detail.build-status"
+            InputTemplate: |
+              "Status for AWS CodeBuild Project '<project-name>' has changed. Build '<build-id>' has reached the Build Status of '<build-status>'."
+          Id: !Join [ '-', [ !Ref ProjectName, 'CodeBuild-Project-NonSuccess-Notifications' ] ]
+
+Outputs:
+  BaseAmiSSMParameterName:
+    Description: The Base AMI SSM Parameter Store Parameter Name.
+    Value: !Ref BaseAmiSSMParameterName
+  GoldenAmiSSMParameterName:
+    Description: The Golden AMI SSM Parameter Store Parameter Name.
+    Value: !Ref GoldenAmiSSMParameterName
+  CodeCommitRepoName:
+    Description: The name of the AWS CodeCommit Repository.
+    Value: !Ref CodeCommitRepoName
+  CodeCommitBranchName:
+    Description: The name of the AWS CodeCommit Repository branch where the code is to be committed.
+    Value: !Ref CodeCommitBranchName
+  CodeBuildProjectName:
+    Description: The name of the AWS CodeBuild Project.
+    Value: !Ref CodeBuildProjectName
+  CodeBuildCWLogGroupName:
+    Description: The Amazon CloudWatch Logs Group that will be used by the AWS CodeBuild Project for loggging purposes.
+    Value: !Ref CodeBuildProjectName
+  CodeBuildCWLogStreamName:
+    Description: The Amazon CloudWatch Logs Group Stream name that will be used by the AWS CodeBuild Project for loggging purposes.
+    Value: !Ref CodeBuildProjectName
+  CodePipelinePipelineName:
+    Description: The name of the AWS CodePipeline pipeline.
+    Value: !Ref CodeBuildProjectName

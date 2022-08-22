@@ -1,0 +1,51 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+    - echo "Phase:pre_build"
+    - echo "Installing HashiCorp Packer..."
+    - curl -qL -o packer.zip https://releases.hashicorp.com/packer/0.12.3/packer_0.12.3_linux_amd64.zip && unzip packer.zip
+    - echo "Installing jq..."
+    - curl -qL -o jq https://stedolan.github.io/jq/download/linux64/jq && chmod +x ./jq
+    - export PACKER_LOG=1
+    - echo $PACKER_LOG
+    - echo "Validating Packer template ${PACKER_TEMPLATE_FILENAME}"
+    - ./packer validate ./packer_files/template/$PACKER_TEMPLATE_FILENAME
+  build:
+    commands:
+    - echo "Phase:build"
+    - echo "[`date`]AMI build started"
+    ### HashiCorp Packer cannot currently obtain the AWS CodeBuild-assigned role and its credentials
+    ### Manually capture and configure the AWS CLI to provide HashiCorp Packer with AWS credentials
+    ### More info here: https://github.com/mitchellh/packer/issues/4279
+    - echo "Configuring AWS credentials"
+    - curl -qL -o aws_credentials.json http://169.254.170.2/$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI > aws_credentials.json
+    - aws configure set region $AWS_REGION
+    - aws configure set aws_access_key_id `./jq -r '.AccessKeyId' aws_credentials.json`
+    - aws configure set aws_secret_access_key `./jq -r '.SecretAccessKey' aws_credentials.json`
+    - aws configure set aws_session_token `./jq -r '.Token' aws_credentials.json`
+    - echo "Building AWS AMI using source_ami=${AWS_AMI_ID} Packer template=${PACKER_TEMPLATE_FILENAME}"
+    - ./packer build ./packer_files/template/$PACKER_TEMPLATE_FILENAME
+  post_build:
+    commands:
+    - echo "Phase:post_build"
+    - echo "[ `date`]AMI build completed"
+    - echo "Finding ami id of the ami that was created"
+    - |
+      if [[ -f "manifest.json" ]]; then
+        echo "manifest.json exists. Golden AMI build was successful"
+        echo "cat manifest.json"
+        cat manifest.json
+        AMI_ID=$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d ":" -f2)
+        echo "New Golden AMI ami id: ${AMI_ID}"
+        echo "Updating SSM Parameter Store Parameter ${AWS_GOLDEN_AMI_SSM_PARAM_NAME} with new Golden AMI ami id"
+        aws ssm put-parameter --name ${AWS_GOLDEN_AMI_SSM_PARAM_NAME} --description "${AWS_GOLDEN_AMI_SSM_PARAM_DESC}" --value $AMI_ID --type String --overwrite
+      else
+        echo "manifest.json is missing. Possible reason for this is that the Golden AMI build failed. Please refer to the AWS CodeBuild logs to troubleshoot this issue"
+        echo "AWS Systems Manager Parameter Store value for base ami id will be changed to its previous value, since the build with this new base ami failed."
+        current_base_ami_ssm_parameter_version=$(aws ssm get-parameter --name ${AWS_BASE_AMI_SSM_PARAM_NAME} | jq -r '.Parameter.Version')
+        previous_base_ami_ssm_parameter_version=$(($current_base_ami_ssm_parameter_version - 1 ))
+        previous_base_ami=$(aws ssm get-parameter --name ${AWS_BASE_AMI_SSM_PARAM_NAME}:$previous_base_ami_ssm_parameter_version --query 'Parameter'.'Value' --output text)
+        aws ssm put-parameter --name ${AWS_BASE_AMI_SSM_PARAM_NAME} --description "${AWS_BASE_AMI_SSM_PARAM_DESC}" --value $previous_base_ami --type String --overwrite
+      fi

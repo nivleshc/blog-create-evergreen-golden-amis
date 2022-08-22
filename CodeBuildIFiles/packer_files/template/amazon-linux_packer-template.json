@@ -1,0 +1,40 @@
+{
+  "variables": {
+    "aws_region": "{{env `AWS_REGION`}}",
+    "aws_base_ami_id": "{{env `AWS_BASE_AMI_ID`}}",
+    "aws_golden_ami_name": "{{env `AWS_AMI_NAME_PREFIX`}}_{{isotime \"20060102030405\"}}",
+    "aws_golden_ami_description": "Custom {{env `AWS_AMI_NAME_PREFIX`}} AMI created using {{env `AWS_BASE_AMI_ID`}} as source}}",
+    "packer_security_group_id": "{{env `PACKER_SECURITY_GROUP_ID`}}"
+  },
+  "builders": [
+    {
+      "type": "amazon-ebs",
+      "region": "{{user `aws_region`}}",
+      "instance_type": "t2.micro",
+      "ssh_username": "ec2-user",
+      "ami_name": "{{user `aws_golden_ami_name`}}",
+      "ami_description": "{{user `aws_golden_ami_description`}}",
+      "associate_public_ip_address": "true",
+      "source_ami": "{{user `aws_base_ami_id`}}",
+      "security_group_id": "{{user `packer_security_group_id`}}",
+      "tags": {
+        "source_ami": "{{user `aws_base_ami_id`}}",
+        "creation_date": "{{isotime \"20060102 03:04:05\"}} UTC",
+        "Name": "{{user `aws_golden_ami_name`}}"
+      }
+    }
+  ],
+  "post-processors": [
+    {
+      "type": "manifest",
+      "output": "manifest.json",
+      "strip_path": true
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "script": "./packer_files/scripts/customise_and_install_packages.sh"
+    }
+  ]
+}
